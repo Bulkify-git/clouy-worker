@@ -40,6 +40,8 @@ export interface MoltbotEnv {
   CF_ACCOUNT_ID?: string; // Cloudflare account ID for R2 endpoint
   // Cloudflare Workers AI binding
   AI: Ai;
+  // Clouy custom system prompt extension
+  CLOUY_SYSTEM_PROMPT_EXTRA?: string;
   // Browser Rendering binding for CDP shim
   BROWSER?: Fetcher;
   CDP_SECRET?: string; // Shared secret for CDP endpoint authentication

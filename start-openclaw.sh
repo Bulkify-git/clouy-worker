@@ -260,6 +260,17 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
     };
 }
 
+// Clouy: System prompt extension for Calendar trigger and Actions format
+if (process.env.CLOUY_SYSTEM_PROMPT_EXTRA) {
+    config.agents = config.agents || {};
+    config.agents.defaults = config.agents.defaults || {};
+    const existing = config.agents.defaults.systemPrompt || '';
+    config.agents.defaults.systemPrompt = existing
+        ? existing + '\n\n' + process.env.CLOUY_SYSTEM_PROMPT_EXTRA
+        : process.env.CLOUY_SYSTEM_PROMPT_EXTRA;
+    console.log('Clouy system prompt extension applied');
+}
+
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 console.log('Configuration patched successfully');
 EOFPATCH
