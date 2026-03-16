@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "moltbot-sandbox",
+  "name": "clouy",
   "main": "src/index.ts",
   "compatibility_date": "2025-05-06",
   "compatibility_flags": ["nodejs_compat"],
@@ -63,6 +63,10 @@
     },
   ],
 
+  // Cloudflare Workers AI binding
+  "ai": {
+    "binding": "AI",
+  },
   // Browser Rendering binding for CDP shim
   "browser": {
     "binding": "BROWSER",

@@ -298,4 +298,89 @@ adminApi.post('/gateway/restart', async (c) => {
 // Mount admin API routes under /admin
 api.route('/admin', adminApi);
 
+// POST /api/analyze-file - Analyze uploaded file with Cloudflare Workers AI
+api.options('/analyze-file', (c) => {
+  return c.newResponse(null, 204, {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  });
+});
+
+api.post('/analyze-file', async (c) => {
+  const body = await c.req.json<{
+    file_name: string;
+    file_type: string;
+    file_content: string;
+    user_tools: string[];
+    autonomy_level: 'strict' | 'full_access';
+  }>();
+
+  const { file_name, file_type, file_content, user_tools, autonomy_level } = body;
+
+  let fileAnalysis = '';
+
+  if (file_type.startsWith('image/')) {
+    try {
+      const visionResult = await c.env.AI.run('@cf/llava-hf/llava-1.5-7b-hf' as Parameters<Ai['run']>[0], {
+        image: [...new Uint8Array(Uint8Array.from(atob(file_content), (ch) => ch.charCodeAt(0)))],
+        prompt:
+          'Describe this image in detail. What is it? Receipt, invoice, document, photo, screenshot? What actions could be taken?',
+        max_tokens: 512,
+      } as never);
+      fileAnalysis =
+        (visionResult as { description?: string; response?: string }).description ||
+        (visionResult as { description?: string; response?: string }).response ||
+        '';
+    } catch {
+      fileAnalysis = '[Bildanalyse nicht verfügbar]';
+    }
+  } else if (file_type.startsWith('text/') || file_type === 'application/json') {
+    fileAnalysis = file_content.substring(0, 3000);
+  } else if (file_type === 'application/pdf') {
+    fileAnalysis = '[PDF-Inhalt – Textextraktion folgt in späterem Update]';
+  } else {
+    fileAnalysis = `[Datei: ${file_name}]`;
+  }
+
+  const prompt = `Du bist Clouy, ein KI-Agent. Der User hat eine Datei hochgeladen.
+
+Datei: ${file_name} (${file_type})
+Inhalt: ${fileAnalysis.substring(0, 2000)}
+
+Verbundene Tools: ${user_tools.join(', ') || 'Keine'}
+Modus: ${autonomy_level}
+
+Analysiere die Datei kurz (2-3 Sätze) und schlage passende Aktionen vor (nur für verbundene Tools).
+Aktionstypen: send_email, create_event, save_to_drive, create_task
+
+Formatiere Vorschläge als JSON-Block:
+\`\`\`json
+{
+  "analysis": "...",
+  "suggested_actions": [
+    {
+      "type": "send_email",
+      "title": "Beschreibung",
+      "details": { "to": "", "subject": "", "body": "" }
+    }
+  ]
+}
+\`\`\`
+Wenn keine sinnvollen Aktionen möglich sind, lasse suggested_actions leer ([]).`;
+
+  const aiResponse = await c.env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
+    messages: [
+      { role: 'system', content: prompt },
+      { role: 'user', content: `Analysiere: ${file_name}` },
+    ],
+    max_tokens: 1024,
+  });
+
+  return c.newResponse(JSON.stringify({ response: (aiResponse as { response: string }).response }), 200, {
+    'Content-Type': 'application/json',
+    'Access-Control-Allow-Origin': '*',
+  });
+});
+
 export { api };
