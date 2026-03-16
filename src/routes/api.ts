@@ -298,6 +298,62 @@ adminApi.post('/gateway/restart', async (c) => {
 // Mount admin API routes under /admin
 api.route('/admin', adminApi);
 
+// POST /api/refresh-token - Erneuert Google Access Token
+api.options('/refresh-token', (c) => {
+  return c.newResponse(null, 204, {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+  });
+});
+
+api.post('/refresh-token', async (c) => {
+  const body = await c.req.json<{ refresh_token: string }>();
+
+  if (!body.refresh_token) {
+    return c.newResponse(JSON.stringify({ error: 'Missing refresh_token' }), 400, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    });
+  }
+
+  const googleClientId = (c.env as Record<string, string>).GOOGLE_CLIENT_ID;
+  const googleClientSecret = (c.env as Record<string, string>).GOOGLE_CLIENT_SECRET;
+
+  if (!googleClientId || !googleClientSecret) {
+    return c.newResponse(JSON.stringify({ error: 'Google credentials not configured' }), 500, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    });
+  }
+
+  const response = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: googleClientId,
+      client_secret: googleClientSecret,
+      refresh_token: body.refresh_token,
+      grant_type: 'refresh_token',
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    return c.newResponse(JSON.stringify({ error: 'Refresh failed', details: error }), 401, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    });
+  }
+
+  const data = await response.json() as { access_token: string; expires_in: number };
+  return c.newResponse(
+    JSON.stringify({ access_token: data.access_token, expires_in: data.expires_in }),
+    200,
+    { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+  );
+});
+
 // POST /api/analyze-file - Analyze uploaded file with Cloudflare Workers AI
 api.options('/analyze-file', (c) => {
   return c.newResponse(null, 204, {
