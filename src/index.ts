@@ -81,10 +81,11 @@ function validateRequiredEnv(env: MoltbotEnv): string[] {
   const hasLegacyGateway = !!(env.AI_GATEWAY_API_KEY && env.AI_GATEWAY_BASE_URL);
   const hasAnthropicKey = !!env.ANTHROPIC_API_KEY;
   const hasOpenAIKey = !!env.OPENAI_API_KEY;
+  const hasExternalEndpoint = !!env.EXTERNAL_AI_ENDPOINT;
 
-  if (!hasCloudflareGateway && !hasLegacyGateway && !hasAnthropicKey && !hasOpenAIKey) {
+  if (!hasCloudflareGateway && !hasLegacyGateway && !hasAnthropicKey && !hasOpenAIKey && !hasExternalEndpoint) {
     missing.push(
-      'ANTHROPIC_API_KEY, OPENAI_API_KEY, or CLOUDFLARE_AI_GATEWAY_API_KEY + CF_AI_GATEWAY_ACCOUNT_ID + CF_AI_GATEWAY_GATEWAY_ID',
+      'ANTHROPIC_API_KEY, OPENAI_API_KEY, CLOUDFLARE_AI_GATEWAY_API_KEY + CF_AI_GATEWAY_ACCOUNT_ID + CF_AI_GATEWAY_GATEWAY_ID, or EXTERNAL_AI_ENDPOINT',
     );
   }
 
@@ -221,6 +222,30 @@ app.use('/debug/*', async (c, next) => {
   return next();
 });
 app.route('/debug', debug);
+
+// =============================================================================
+// EXTERNAL AI: Intercept POST / when EXTERNAL_AI_ENDPOINT is configured
+// =============================================================================
+
+app.use('/', async (c, next) => {
+  if (c.req.method !== 'POST' || !c.env.EXTERNAL_AI_ENDPOINT) {
+    return next();
+  }
+  console.log('[EXTERNAL_AI] Intercepting POST / → forwarding to external AI endpoint');
+  const body = await c.req.json<{ prompt?: string; message?: string }>();
+  const prompt = body.prompt || body.message || '';
+  const res = await fetch(c.env.EXTERNAL_AI_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt }),
+  });
+  const data = await res.json<{ response?: string; message?: string; text?: string }>();
+  return c.newResponse(
+    JSON.stringify({ response: data.response || data.message || data.text || '' }),
+    200,
+    { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+  );
+});
 
 // =============================================================================
 // CATCH-ALL: Proxy to Moltbot gateway
