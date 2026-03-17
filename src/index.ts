@@ -452,8 +452,73 @@ app.all('*', async (c) => {
   }
 
   console.log('[HTTP] Proxying:', url.pathname + url.search);
+
+  // For POST requests to /, intercept tool call responses and retry without tool context
+  const isAiChatRequest = request.method === 'POST' && url.pathname === '/';
+
+  // Clone request body before first fetch so we can retry if needed
+  const requestForRetry = isAiChatRequest ? request.clone() : null;
+
   const httpResponse = await sandbox.containerFetch(request, MOLTBOT_PORT);
   console.log('[HTTP] Response status:', httpResponse.status);
+
+  // Check if the response is a tool call that OpenClaw failed to complete
+  if (isAiChatRequest && httpResponse.status === 200) {
+    const responseClone = httpResponse.clone();
+    try {
+      const body = await responseClone.json<{ response?: string; message?: string; type?: string; name?: string }>();
+      const responseText = body.response || body.message || '';
+
+      // Detect tool call in response (either top-level or nested in response field)
+      const isTopLevelToolCall = body.type === 'function' || body.type === 'tool_use';
+      let isNestedToolCall = false;
+      if (!isTopLevelToolCall && typeof responseText === 'string') {
+        try {
+          const parsed = JSON.parse(responseText);
+          isNestedToolCall = parsed.type === 'function' || parsed.type === 'tool_use';
+        } catch { /* not JSON */ }
+      }
+
+      if (isTopLevelToolCall || isNestedToolCall) {
+        console.warn('[HTTP] Tool call response detected from container, retrying without tool context:', body.name || 'unknown');
+
+        // Retry the request without tools/toolData so Claude responds with plain text
+        const originalText = await requestForRetry!.text();
+        let retryBody: Record<string, unknown>;
+        try {
+          retryBody = JSON.parse(originalText);
+        } catch {
+          retryBody = {};
+        }
+
+        // Strip tool-related fields and add plain-text instruction
+        const { tools: _t, toolData: _d, ...cleanBody } = retryBody as Record<string, unknown> & { tools?: unknown; toolData?: unknown };
+        const originalMessage = (cleanBody.message as string) || (cleanBody.prompt as string) || '';
+        cleanBody.message = originalMessage + '\n\n[Respond with plain text only. Do not use tools.]';
+        cleanBody.prompt = cleanBody.message;
+
+        const retryRequest = new Request(request.url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(cleanBody),
+        });
+
+        const retryResponse = await sandbox.containerFetch(retryRequest, MOLTBOT_PORT);
+        console.log('[HTTP] Retry response status:', retryResponse.status);
+
+        const retryHeaders = new Headers(retryResponse.headers);
+        retryHeaders.set('X-Worker-Debug', 'proxy-to-moltbot-retry');
+        retryHeaders.set('X-Debug-Path', url.pathname);
+        return new Response(retryResponse.body, {
+          status: retryResponse.status,
+          statusText: retryResponse.statusText,
+          headers: retryHeaders,
+        });
+      }
+    } catch {
+      /* not JSON or other error — fall through to normal response */
+    }
+  }
 
   // Add debug header to verify worker handled the request
   const newHeaders = new Headers(httpResponse.headers);
