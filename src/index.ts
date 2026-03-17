@@ -354,6 +354,7 @@ app.all('*', async (c) => {
       let data = event.data;
 
       if (typeof data === 'string') {
+        console.log('[WS DEBUG] Raw from container:', typeof data, data.substring(0, 500));
         try {
           const parsed = JSON.parse(data);
           if (debugLogs) {
