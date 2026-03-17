@@ -81,11 +81,9 @@ function validateRequiredEnv(env: MoltbotEnv): string[] {
   const hasLegacyGateway = !!(env.AI_GATEWAY_API_KEY && env.AI_GATEWAY_BASE_URL);
   const hasAnthropicKey = !!env.ANTHROPIC_API_KEY;
   const hasOpenAIKey = !!env.OPENAI_API_KEY;
-  const hasExternalEndpoint = !!env.EXTERNAL_AI_ENDPOINT;
-
-  if (!hasCloudflareGateway && !hasLegacyGateway && !hasAnthropicKey && !hasOpenAIKey && !hasExternalEndpoint) {
+  if (!hasCloudflareGateway && !hasLegacyGateway && !hasAnthropicKey && !hasOpenAIKey) {
     missing.push(
-      'ANTHROPIC_API_KEY, OPENAI_API_KEY, CLOUDFLARE_AI_GATEWAY_API_KEY + CF_AI_GATEWAY_ACCOUNT_ID + CF_AI_GATEWAY_GATEWAY_ID, or EXTERNAL_AI_ENDPOINT',
+      'ANTHROPIC_API_KEY, OPENAI_API_KEY, or CLOUDFLARE_AI_GATEWAY_API_KEY + CF_AI_GATEWAY_ACCOUNT_ID + CF_AI_GATEWAY_GATEWAY_ID',
     );
   }
 
@@ -224,30 +222,6 @@ app.use('/debug/*', async (c, next) => {
 app.route('/debug', debug);
 
 // =============================================================================
-// EXTERNAL AI: Intercept POST / when EXTERNAL_AI_ENDPOINT is configured
-// =============================================================================
-
-app.use('/', async (c, next) => {
-  if (c.req.method !== 'POST' || !c.env.EXTERNAL_AI_ENDPOINT) {
-    return next();
-  }
-  console.log('[EXTERNAL_AI] Intercepting POST / → forwarding to external AI endpoint');
-  const body = await c.req.json<{ prompt?: string; message?: string }>();
-  const prompt = body.prompt || body.message || '';
-  const res = await fetch(c.env.EXTERNAL_AI_ENDPOINT, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt }),
-  });
-  const data = await res.json<{ response?: string; message?: string; text?: string }>();
-  return c.newResponse(
-    JSON.stringify({ response: data.response || data.message || data.text || '' }),
-    200,
-    { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-  );
-});
-
-// =============================================================================
 // CATCH-ALL: Proxy to Moltbot gateway
 // =============================================================================
 
@@ -379,13 +353,36 @@ app.all('*', async (c) => {
       }
       let data = event.data;
 
-      // Try to intercept and transform error messages
       if (typeof data === 'string') {
         try {
           const parsed = JSON.parse(data);
           if (debugLogs) {
             console.log('[WS] Parsed JSON, has error.message:', !!parsed.error?.message);
           }
+
+          // Bug 2: Filter intermediate tool call messages – client sees only final text responses
+          const isToolCall = parsed.type === 'tool_use' || parsed.type === 'function';
+          const isToolOnlyContent =
+            Array.isArray(parsed.content) &&
+            parsed.content.length > 0 &&
+            parsed.content.every(
+              (b: { type: string }) => b.type === 'tool_use' || b.type === 'function',
+            );
+
+          if (isToolCall || isToolOnlyContent) {
+            // Bug 1: Detect and warn about malformed tool calls with [object Object] params
+            const rawParams = JSON.stringify(parsed.parameters ?? parsed.input ?? {});
+            if (rawParams.includes('[object Object]')) {
+              console.warn(
+                '[WS] Malformed tool call suppressed – [object Object] in params:',
+                parsed.name,
+              );
+            } else if (debugLogs) {
+              console.log('[WS] Filtered tool call (not forwarded to client):', parsed.name);
+            }
+            return; // Don't forward to client
+          }
+
           if (parsed.error?.message) {
             if (debugLogs) {
               console.log('[WS] Original error.message:', parsed.error.message);

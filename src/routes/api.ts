@@ -378,28 +378,16 @@ api.post('/analyze-file', async (c) => {
 
   if (file_type.startsWith('image/')) {
     try {
-      if (c.env.EXTERNAL_AI_ENDPOINT) {
-        const r = await fetch(c.env.EXTERNAL_AI_ENDPOINT, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            prompt: `Describe this image file "${file_name}" in detail. What is it — receipt, invoice, document, photo, screenshot? What actions could be taken?`,
-          }),
-        });
-        const d = await r.json<{ response?: string; message?: string }>();
-        fileAnalysis = d.response || d.message || '';
-      } else {
-        const visionResult = await c.env.AI.run('@cf/llava-hf/llava-1.5-7b-hf' as Parameters<Ai['run']>[0], {
-          image: [...new Uint8Array(Uint8Array.from(atob(file_content), (ch) => ch.charCodeAt(0)))],
-          prompt:
-            'Describe this image in detail. What is it? Receipt, invoice, document, photo, screenshot? What actions could be taken?',
-          max_tokens: 512,
-        } as never);
-        fileAnalysis =
-          (visionResult as { description?: string; response?: string }).description ||
-          (visionResult as { description?: string; response?: string }).response ||
-          '';
-      }
+      const visionResult = await c.env.AI.run('@cf/llava-hf/llava-1.5-7b-hf' as Parameters<Ai['run']>[0], {
+        image: [...new Uint8Array(Uint8Array.from(atob(file_content), (ch) => ch.charCodeAt(0)))],
+        prompt:
+          'Describe this image in detail. What is it? Receipt, invoice, document, photo, screenshot? What actions could be taken?',
+        max_tokens: 512,
+      } as never);
+      fileAnalysis =
+        (visionResult as { description?: string; response?: string }).description ||
+        (visionResult as { description?: string; response?: string }).response ||
+        '';
     } catch {
       fileAnalysis = '[Image analysis unavailable]';
     }
@@ -438,24 +426,14 @@ Formatiere Vorschläge als JSON-Block:
 Wenn keine sinnvollen Aktionen möglich sind, lasse suggested_actions leer ([]).`;
 
   let analysisResponse = '';
-  if (c.env.EXTERNAL_AI_ENDPOINT) {
-    const r = await fetch(c.env.EXTERNAL_AI_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt }),
-    });
-    const d = await r.json<{ response?: string; message?: string; text?: string }>();
-    analysisResponse = d.response || d.message || d.text || '';
-  } else {
-    const aiResponse = await c.env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
-      messages: [
-        { role: 'system', content: prompt },
-        { role: 'user', content: `Analyse: ${file_name}` },
-      ],
-      max_tokens: 1024,
-    });
-    analysisResponse = (aiResponse as { response: string }).response;
-  }
+  const aiResponse = await c.env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
+    messages: [
+      { role: 'system', content: prompt },
+      { role: 'user', content: `Analyse: ${file_name}` },
+    ],
+    max_tokens: 1024,
+  });
+  analysisResponse = (aiResponse as { response: string }).response;
 
   return c.newResponse(JSON.stringify({ response: analysisResponse }), 200, {
     'Content-Type': 'application/json',
