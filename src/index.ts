@@ -29,7 +29,7 @@ import { createAccessMiddleware } from './auth';
 import { ensureMoltbotGateway, findExistingMoltbotProcess } from './gateway';
 import { publicRoutes, api, adminUi, debug, cdp } from './routes';
 import { redactSensitiveParams } from './utils/logging';
-import { braveWebSearch, formatSearchResultsAsContext } from './utils/brave-search';
+import { braveWebSearch, duckDuckGoSearch, formatSearchResultsAsContext } from './utils/brave-search';
 import loadingPageHtml from './assets/loading.html';
 import configErrorHtml from './assets/config-error.html';
 
@@ -494,10 +494,12 @@ app.all('*', async (c) => {
         const originalMessage = (retryBody.message as string) || '';
 
         // If web_search and Brave API key is configured, do a real search
-        if (toolName === 'web_search' && c.env.BRAVE_SEARCH_API_KEY) {
-          console.log('[HTTP] Executing Brave web search for:', originalMessage.slice(0, 100));
+        if (toolName === 'web_search') {
+          console.log('[HTTP] Executing web search for:', originalMessage.slice(0, 100));
           try {
-            const results = await braveWebSearch(originalMessage, c.env.BRAVE_SEARCH_API_KEY, 5);
+            const results = c.env.BRAVE_SEARCH_API_KEY
+              ? await braveWebSearch(originalMessage, c.env.BRAVE_SEARCH_API_KEY, 5)
+              : await duckDuckGoSearch(originalMessage, 5);
             const searchContext = formatSearchResultsAsContext(originalMessage, results);
             console.log('[HTTP] Got', results.length, 'search results, retrying with context');
 

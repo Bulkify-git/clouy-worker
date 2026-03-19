@@ -16,6 +16,59 @@ interface BraveSearchResponse {
   };
 }
 
+interface DuckDuckGoResult {
+  RelatedTopics?: Array<{
+    Text?: string;
+    FirstURL?: string;
+    Result?: string;
+  }>;
+  AbstractText?: string;
+  AbstractURL?: string;
+  AbstractSource?: string;
+}
+
+/** Free fallback using DuckDuckGo Instant Answer API — no key required */
+export async function duckDuckGoSearch(
+  query: string,
+  count = 5,
+): Promise<BraveSearchResult[]> {
+  const url = new URL('https://api.duckduckgo.com/');
+  url.searchParams.set('q', query);
+  url.searchParams.set('format', 'json');
+  url.searchParams.set('no_html', '1');
+  url.searchParams.set('skip_disambig', '1');
+
+  const response = await fetch(url.toString(), {
+    headers: { Accept: 'application/json' },
+  });
+
+  if (!response.ok) throw new Error(`DuckDuckGo returned ${response.status}`);
+
+  const data = (await response.json()) as DuckDuckGoResult;
+  const results: BraveSearchResult[] = [];
+
+  if (data.AbstractText && data.AbstractURL) {
+    results.push({
+      title: data.AbstractSource || 'Result',
+      url: data.AbstractURL,
+      description: data.AbstractText,
+    });
+  }
+
+  for (const topic of data.RelatedTopics ?? []) {
+    if (results.length >= count) break;
+    if (topic.Text && topic.FirstURL) {
+      results.push({
+        title: topic.Text.slice(0, 80),
+        url: topic.FirstURL,
+        description: topic.Text,
+      });
+    }
+  }
+
+  return results;
+}
+
 export async function braveWebSearch(
   query: string,
   apiKey: string,
