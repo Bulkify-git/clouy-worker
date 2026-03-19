@@ -109,4 +109,7 @@
   // Supabase (for billing webhook updates):
   // - SUPABASE_URL: https://your-project.supabase.co
   // - SUPABASE_SERVICE_ROLE_KEY: Service role key for webhook updates
+  //
+  // Web Search (optional):
+  // - BRAVE_SEARCH_API_KEY: Brave Search API subscription token (free tier: 2000 queries/month)
 }

@@ -29,6 +29,7 @@ import { createAccessMiddleware } from './auth';
 import { ensureMoltbotGateway, findExistingMoltbotProcess } from './gateway';
 import { publicRoutes, api, adminUi, debug, cdp } from './routes';
 import { redactSensitiveParams } from './utils/logging';
+import { braveWebSearch, formatSearchResultsAsContext } from './utils/brave-search';
 import loadingPageHtml from './assets/loading.html';
 import configErrorHtml from './assets/config-error.html';
 
@@ -480,9 +481,9 @@ app.all('*', async (c) => {
       }
 
       if (isTopLevelToolCall || isNestedToolCall) {
-        console.warn('[HTTP] Tool call response detected from container, retrying without tool context:', body.name || 'unknown');
+        const toolName = body.name || (isNestedToolCall ? 'nested' : 'unknown');
+        console.warn('[HTTP] Tool call response detected:', toolName);
 
-        // Retry the request without tools/toolData so Claude responds with plain text
         const originalText = await requestForRetry!.text();
         let retryBody: Record<string, unknown>;
         try {
@@ -490,16 +491,47 @@ app.all('*', async (c) => {
         } catch {
           retryBody = {};
         }
+        const originalMessage = (retryBody.message as string) || '';
 
-        // Add plain-text instruction to prevent further tool calls
-        const cleanBody = retryBody as Record<string, unknown>;
-        const originalMessage = (cleanBody.message as string) || '';
-        cleanBody.message = originalMessage + '\n\n[Respond with plain text only. Do not use tools.]';
+        // If web_search and Brave API key is configured, do a real search
+        if (toolName === 'web_search' && c.env.BRAVE_SEARCH_API_KEY) {
+          console.log('[HTTP] Executing Brave web search for:', originalMessage.slice(0, 100));
+          try {
+            const results = await braveWebSearch(originalMessage, c.env.BRAVE_SEARCH_API_KEY, 5);
+            const searchContext = formatSearchResultsAsContext(originalMessage, results);
+            console.log('[HTTP] Got', results.length, 'search results, retrying with context');
+
+            retryBody.message = searchContext + '\n\n' + originalMessage;
+
+            const retryRequest = new Request(request.url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(retryBody),
+            });
+
+            const retryResponse = await sandbox.containerFetch(retryRequest, MOLTBOT_PORT);
+            console.log('[HTTP] Web search retry status:', retryResponse.status);
+
+            const retryHeaders = new Headers(retryResponse.headers);
+            retryHeaders.set('X-Worker-Debug', 'proxy-to-moltbot-web-search');
+            retryHeaders.set('X-Debug-Path', url.pathname);
+            return new Response(retryResponse.body, {
+              status: retryResponse.status,
+              statusText: retryResponse.statusText,
+              headers: retryHeaders,
+            });
+          } catch (searchError) {
+            console.error('[HTTP] Brave search failed, falling back:', searchError);
+          }
+        }
+
+        // Fallback: retry with plain text instruction
+        retryBody.message = originalMessage + '\n\n[Respond with plain text only. Do not use tools.]';
 
         const retryRequest = new Request(request.url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(cleanBody),
+          body: JSON.stringify(retryBody),
         });
 
         const retryResponse = await sandbox.containerFetch(retryRequest, MOLTBOT_PORT);
