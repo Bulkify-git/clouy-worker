@@ -101,4 +101,12 @@
   // - R2_ACCESS_KEY_ID: R2 access key ID (from R2 API tokens)
   // - R2_SECRET_ACCESS_KEY: R2 secret access key (from R2 API tokens)
   // - CF_ACCOUNT_ID: Your Cloudflare account ID (for R2 endpoint URL)
+  //
+  // Stripe billing (optional):
+  // - STRIPE_SECRET_KEY: Stripe secret key (sk_live_... or sk_test_...)
+  // - STRIPE_WEBHOOK_SECRET: Stripe webhook signing secret (whsec_...)
+  //
+  // Supabase (for billing webhook updates):
+  // - SUPABASE_URL: https://your-project.supabase.co
+  // - SUPABASE_SERVICE_ROLE_KEY: Service role key for webhook updates
 }

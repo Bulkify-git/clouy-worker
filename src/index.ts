@@ -491,11 +491,10 @@ app.all('*', async (c) => {
           retryBody = {};
         }
 
-        // Strip tool-related fields and add plain-text instruction
-        const { tools: _t, toolData: _d, ...cleanBody } = retryBody as Record<string, unknown> & { tools?: unknown; toolData?: unknown };
-        const originalMessage = (cleanBody.message as string) || (cleanBody.prompt as string) || '';
+        // Add plain-text instruction to prevent further tool calls
+        const cleanBody = retryBody as Record<string, unknown>;
+        const originalMessage = (cleanBody.message as string) || '';
         cleanBody.message = originalMessage + '\n\n[Respond with plain text only. Do not use tools.]';
-        cleanBody.prompt = cleanBody.message;
 
         const retryRequest = new Request(request.url, {
           method: 'POST',
