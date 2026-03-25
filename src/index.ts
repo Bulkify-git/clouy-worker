@@ -29,7 +29,11 @@ import { createAccessMiddleware } from './auth';
 import { ensureMoltbotGateway, findExistingMoltbotProcess } from './gateway';
 import { publicRoutes, api, adminUi, debug, cdp } from './routes';
 import { redactSensitiveParams } from './utils/logging';
-import { braveWebSearch, duckDuckGoSearch, formatSearchResultsAsContext } from './utils/brave-search';
+import {
+  braveWebSearch,
+  duckDuckGoSearch,
+  formatSearchResultsAsContext,
+} from './utils/brave-search';
 import loadingPageHtml from './assets/loading.html';
 import configErrorHtml from './assets/config-error.html';
 
@@ -82,7 +86,8 @@ function isInternalMessage(parsed: Record<string, unknown>): boolean {
   // Messages with role=assistant where ALL content blocks are tool calls
   if (Array.isArray(parsed.content) && parsed.content.length > 0) {
     const allToolCalls = parsed.content.every(
-      (b: { type: string }) => b.type === 'tool_use' || b.type === 'function' || b.type === 'tool_result',
+      (b: { type: string }) =>
+        b.type === 'tool_use' || b.type === 'function' || b.type === 'tool_result',
     );
     if (allToolCalls) {
       return true;
@@ -443,9 +448,16 @@ app.all('*', async (c) => {
           if (isInternalMessage(parsed)) {
             const rawParams = JSON.stringify(parsed.parameters ?? parsed.input ?? {});
             if (rawParams.includes('[object Object]')) {
-              console.warn('[WS] Malformed tool call suppressed – [object Object] in params:', parsed.name);
+              console.warn(
+                '[WS] Malformed tool call suppressed – [object Object] in params:',
+                parsed.name,
+              );
             } else if (debugLogs) {
-              console.log('[WS] Filtered internal message (not forwarded):', parsed.type, parsed.name);
+              console.log(
+                '[WS] Filtered internal message (not forwarded):',
+                parsed.type,
+                parsed.name,
+              );
             }
             return; // Don't forward to client
           }
@@ -546,7 +558,10 @@ app.all('*', async (c) => {
         const newHeaders = new Headers(httpResponse.headers);
         newHeaders.set('X-Worker-Debug', 'proxy-filtered-tool-call');
         return new Response(
-          JSON.stringify({ response: 'Einen Moment, ich verarbeite deine Anfrage...', status: 'processing' }),
+          JSON.stringify({
+            response: 'Einen Moment, ich verarbeite deine Anfrage...',
+            status: 'processing',
+          }),
           { status: 200, headers: newHeaders },
         );
       }
@@ -559,15 +574,24 @@ app.all('*', async (c) => {
             const newHeaders = new Headers(httpResponse.headers);
             newHeaders.set('X-Worker-Debug', 'proxy-filtered-nested-tool-call');
             return new Response(
-              JSON.stringify({ response: 'Einen Moment, ich verarbeite deine Anfrage...', status: 'processing' }),
+              JSON.stringify({
+                response: 'Einen Moment, ich verarbeite deine Anfrage...',
+                status: 'processing',
+              }),
               { status: 200, headers: newHeaders },
             );
           }
-        } catch { /* not JSON nested content - that's fine */ }
+        } catch {
+          /* not JSON nested content - that's fine */
+        }
       }
 
       // Clean [object Object] artifacts from response text
-      if (body.response && typeof body.response === 'string' && body.response.includes('[object Object]')) {
+      if (
+        body.response &&
+        typeof body.response === 'string' &&
+        body.response.includes('[object Object]')
+      ) {
         console.warn('[HTTP] Cleaned [object Object] from response');
         body.response = (body.response as string).replace(/\[object Object\]/g, '').trim();
         const newHeaders = new Headers(httpResponse.headers);

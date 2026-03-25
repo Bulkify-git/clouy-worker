@@ -28,10 +28,7 @@ interface DuckDuckGoResult {
 }
 
 /** Free fallback using DuckDuckGo Instant Answer API — no key required */
-export async function duckDuckGoSearch(
-  query: string,
-  count = 5,
-): Promise<BraveSearchResult[]> {
+export async function duckDuckGoSearch(query: string, count = 5): Promise<BraveSearchResult[]> {
   const url = new URL('https://api.duckduckgo.com/');
   url.searchParams.set('q', query);
   url.searchParams.set('format', 'json');
@@ -98,10 +95,7 @@ export async function braveWebSearch(
   }));
 }
 
-export function formatSearchResultsAsContext(
-  query: string,
-  results: BraveSearchResult[],
-): string {
+export function formatSearchResultsAsContext(query: string, results: BraveSearchResult[]): string {
   if (results.length === 0) {
     return `[Web search for "${query}" returned no results.]`;
   }
