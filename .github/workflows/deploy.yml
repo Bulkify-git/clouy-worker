@@ -18,6 +18,11 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Start Docker
+        run: |
+          sudo systemctl start docker
+          docker info
+
       - name: Install dependencies
         run: npm ci
 

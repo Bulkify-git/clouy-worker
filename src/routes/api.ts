@@ -441,4 +441,228 @@ Wenn keine sinnvollen Aktionen möglich sind, lasse suggested_actions leer ([]).
   });
 });
 
+// POST /api/create-checkout — Create Stripe checkout session
+api.options('/create-checkout', (c) => {
+  return c.newResponse(null, 204, {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  });
+});
+
+api.post('/create-checkout', async (c) => {
+  const stripeKey = (c.env as Record<string, string>).STRIPE_SECRET_KEY;
+  if (!stripeKey) {
+    return c.newResponse(JSON.stringify({ error: 'Stripe not configured' }), 500, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    });
+  }
+
+  const body = await c.req.json<{ planId: string; userId: string; userEmail: string; yearly?: boolean }>();
+  const { planId, userId, userEmail, yearly } = body;
+
+  const priceIds: Record<string, { monthly: string; yearly: string }> = {
+    pro: { monthly: 'price_pro_monthly', yearly: 'price_pro_yearly' },
+    team: { monthly: 'price_team_monthly', yearly: 'price_team_yearly' },
+  };
+
+  const prices = priceIds[planId];
+  if (!prices) {
+    return c.newResponse(JSON.stringify({ error: 'Invalid plan' }), 400, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    });
+  }
+
+  const priceId = yearly ? prices.yearly : prices.monthly;
+
+  const response = await fetch('https://api.stripe.com/v1/checkout/sessions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${stripeKey}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({
+      'payment_method_types[]': 'card',
+      'mode': 'subscription',
+      'line_items[0][price]': priceId,
+      'line_items[0][quantity]': '1',
+      'customer_email': userEmail,
+      'metadata[user_id]': userId,
+      'metadata[plan_id]': planId,
+      'success_url': 'https://clouy.ai/dashboard?payment=success',
+      'cancel_url': 'https://clouy.ai/dashboard/pricing',
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    return c.newResponse(JSON.stringify({ error: 'Stripe error', details: err }), 500, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    });
+  }
+
+  const session = await response.json() as { url: string; id: string };
+  return c.newResponse(JSON.stringify({ url: session.url, sessionId: session.id }), 200, {
+    'Content-Type': 'application/json',
+    'Access-Control-Allow-Origin': '*',
+  });
+});
+
+// POST /api/stripe-webhook — Handle Stripe webhook events
+api.post('/stripe-webhook', async (c) => {
+  const stripeKey = (c.env as Record<string, string>).STRIPE_SECRET_KEY;
+  const webhookSecret = (c.env as Record<string, string>).STRIPE_WEBHOOK_SECRET;
+  const supabaseUrl = (c.env as Record<string, string>).SUPABASE_URL;
+  const supabaseServiceKey = (c.env as Record<string, string>).SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!stripeKey || !webhookSecret) {
+    return c.newResponse(JSON.stringify({ error: 'Stripe not configured' }), 500, {
+      'Content-Type': 'application/json',
+    });
+  }
+
+  const body = await c.req.text();
+  const signature = c.req.header('stripe-signature') || '';
+
+  // Verify webhook signature
+  const parts = signature.split(',').reduce((acc: Record<string, string>, part) => {
+    const [k, v] = part.split('=');
+    acc[k] = v;
+    return acc;
+  }, {});
+
+  const timestamp = parts['t'];
+  const expectedSig = parts['v1'];
+
+  if (!timestamp || !expectedSig) {
+    return c.newResponse(JSON.stringify({ error: 'Invalid signature' }), 400, {
+      'Content-Type': 'application/json',
+    });
+  }
+
+  const signedPayload = `${timestamp}.${body}`;
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw', encoder.encode(webhookSecret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+  );
+  const signatureBytes = await crypto.subtle.sign('HMAC', key, encoder.encode(signedPayload));
+  const computedSig = Array.from(new Uint8Array(signatureBytes))
+    .map(b => b.toString(16).padStart(2, '0')).join('');
+
+  if (computedSig !== expectedSig) {
+    return c.newResponse(JSON.stringify({ error: 'Signature mismatch' }), 400, {
+      'Content-Type': 'application/json',
+    });
+  }
+
+  let event: { type: string; data: { object: Record<string, unknown> } };
+  try {
+    event = JSON.parse(body);
+  } catch {
+    return c.newResponse(JSON.stringify({ error: 'Invalid JSON' }), 400, {
+      'Content-Type': 'application/json',
+    });
+  }
+
+  // Handle relevant events
+  if (supabaseUrl && supabaseServiceKey) {
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      const userId = (session['metadata'] as Record<string, string>)?.['user_id'];
+      const planId = (session['metadata'] as Record<string, string>)?.['plan_id'];
+      const customerId = session['customer'] as string;
+      const subscriptionId = session['subscription'] as string;
+
+      if (userId && planId) {
+        await fetch(`${supabaseUrl}/rest/v1/user_plans`, {
+          method: 'POST',
+          headers: {
+            'apikey': supabaseServiceKey,
+            'Authorization': `Bearer ${supabaseServiceKey}`,
+            'Content-Type': 'application/json',
+            'Prefer': 'resolution=merge-duplicates',
+          },
+          body: JSON.stringify({
+            user_id: userId,
+            plan: planId,
+            stripe_customer_id: customerId,
+            stripe_subscription_id: subscriptionId,
+          }),
+        });
+      }
+    }
+
+    if (event.type === 'customer.subscription.deleted') {
+      const sub = event.data.object;
+      const customerId = sub['customer'] as string;
+
+      // Downgrade to free
+      await fetch(`${supabaseUrl}/rest/v1/user_plans?stripe_customer_id=eq.${customerId}`, {
+        method: 'PATCH',
+        headers: {
+          'apikey': supabaseServiceKey,
+          'Authorization': `Bearer ${supabaseServiceKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ plan: 'free', stripe_subscription_id: null }),
+      });
+    }
+  }
+
+  return c.newResponse(JSON.stringify({ received: true }), 200, {
+    'Content-Type': 'application/json',
+  });
+});
+
+// POST /api/create-portal — Create Stripe customer portal session
+api.options('/create-portal', (c) => {
+  return c.newResponse(null, 204, {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  });
+});
+
+api.post('/create-portal', async (c) => {
+  const stripeKey = (c.env as Record<string, string>).STRIPE_SECRET_KEY;
+  if (!stripeKey) {
+    return c.newResponse(JSON.stringify({ error: 'Stripe not configured' }), 500, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    });
+  }
+
+  const body = await c.req.json<{ customerId: string }>();
+  const { customerId } = body;
+
+  const response = await fetch('https://api.stripe.com/v1/billing_portal/sessions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${stripeKey}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({
+      'customer': customerId,
+      'return_url': 'https://clouy.ai/dashboard/settings',
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    return c.newResponse(JSON.stringify({ error: 'Stripe error', details: err }), 500, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    });
+  }
+
+  const portal = await response.json() as { url: string };
+  return c.newResponse(JSON.stringify({ url: portal.url }), 200, {
+    'Content-Type': 'application/json',
+    'Access-Control-Allow-Origin': '*',
+  });
+});
+
 export { api };

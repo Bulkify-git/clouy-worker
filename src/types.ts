@@ -42,10 +42,16 @@ export interface MoltbotEnv {
   AI: Ai;
   // Clouy custom system prompt extension
   CLOUY_SYSTEM_PROMPT_EXTRA?: string;
+  // Stripe billing
+  STRIPE_SECRET_KEY?: string;
+  STRIPE_WEBHOOK_SECRET?: string;
+  SUPABASE_URL?: string;
+  SUPABASE_SERVICE_ROLE_KEY?: string;
   // Browser Rendering binding for CDP shim
   BROWSER?: Fetcher;
   CDP_SECRET?: string; // Shared secret for CDP endpoint authentication
   WORKER_URL?: string; // Public URL of the worker (for CDP endpoint)
+  BRAVE_SEARCH_API_KEY?: string;
 }
 
 /**
