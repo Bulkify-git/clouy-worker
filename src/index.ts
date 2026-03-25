@@ -48,6 +48,83 @@ function transformErrorMessage(message: string, host: string): string {
   return message;
 }
 
+/**
+ * Check if a parsed WebSocket message is an internal/tool message that should not be forwarded to the client.
+ * Returns true if the message should be filtered out.
+ */
+function isInternalMessage(parsed: Record<string, unknown>): boolean {
+  // Direct tool_use / function type messages
+  if (parsed.type === 'tool_use' || parsed.type === 'tool_result' || parsed.type === 'function') {
+    return true;
+  }
+
+  // Streaming delta messages for tool input
+  if (parsed.type === 'content_block_delta') {
+    const delta = parsed.delta as Record<string, unknown> | undefined;
+    if (delta?.type === 'input_json_delta' || delta?.type === 'tool_use') {
+      return true;
+    }
+  }
+
+  // Content block start for tool_use
+  if (parsed.type === 'content_block_start') {
+    const block = parsed.content_block as Record<string, unknown> | undefined;
+    if (block?.type === 'tool_use') {
+      return true;
+    }
+  }
+
+  // Messages where stop_reason is tool_use (intermediate step, not final answer)
+  if (parsed.stop_reason === 'tool_use') {
+    return true;
+  }
+
+  // Messages with role=assistant where ALL content blocks are tool calls
+  if (Array.isArray(parsed.content) && parsed.content.length > 0) {
+    const allToolCalls = parsed.content.every(
+      (b: { type: string }) => b.type === 'tool_use' || b.type === 'function' || b.type === 'tool_result',
+    );
+    if (allToolCalls) {
+      return true;
+    }
+  }
+
+  // OpenAI-format tool_calls array
+  if (Array.isArray(parsed.tool_calls) && parsed.tool_calls.length > 0 && !parsed.content) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * For messages with mixed content (text + tool_use), strip the tool blocks and return only text.
+ * Returns the cleaned message string, or null if no text content remains.
+ */
+function stripToolBlocksFromContent(parsed: Record<string, unknown>): string | null {
+  if (!Array.isArray(parsed.content) || parsed.content.length === 0) {
+    return null;
+  }
+
+  const hasTextBlock = parsed.content.some((b: { type: string }) => b.type === 'text');
+  const hasToolBlock = parsed.content.some(
+    (b: { type: string }) => b.type === 'tool_use' || b.type === 'function',
+  );
+
+  if (hasTextBlock && hasToolBlock) {
+    // Strip tool blocks, keep only text
+    const textOnly = parsed.content.filter((b: { type: string }) => b.type === 'text');
+    const cleaned: Record<string, unknown> = { ...parsed, content: textOnly };
+    // Remove stop_reason if it was tool_use
+    if (cleaned.stop_reason === 'tool_use') {
+      cleaned.stop_reason = 'end_turn';
+    }
+    return JSON.stringify(cleaned);
+  }
+
+  return null;
+}
+
 export { Sandbox };
 
 /**
@@ -121,14 +198,11 @@ const app = new Hono<AppEnv>();
 // MIDDLEWARE: Applied to ALL routes
 // =============================================================================
 
-// Middleware: Log every request
+// Middleware: Log every request (concise)
 app.use('*', async (c, next) => {
   const url = new URL(c.req.url);
   const redactedSearch = redactSensitiveParams(url);
   console.log(`[REQ] ${c.req.method} ${url.pathname}${redactedSearch}`);
-  console.log(`[REQ] Has ANTHROPIC_API_KEY: ${!!c.env.ANTHROPIC_API_KEY}`);
-  console.log(`[REQ] DEV_MODE: ${c.env.DEV_MODE}`);
-  console.log(`[REQ] DEBUG_ROUTES: ${c.env.DEBUG_ROUTES}`);
   await next();
 });
 
@@ -269,14 +343,21 @@ app.all('*', async (c) => {
       hint = 'Gateway ran out of memory. Try again or check for memory leaks.';
     }
 
-    return c.json(
-      {
-        error: 'Moltbot gateway failed to start',
-        details: errorMessage,
-        hint,
-      },
-      503,
-    );
+    // Return HTML error page for browser requests, JSON for API requests
+    if (acceptsHtml) {
+      return c.html(
+        `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Fehler</title>
+        <style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#1a1a2e;color:#e0e0e0;margin:0}
+        .box{text-align:center;max-width:500px;padding:40px}.err{color:#f87171;margin:20px 0;padding:16px;background:rgba(248,113,113,0.1);border-radius:8px}
+        a{color:#60a5fa}</style></head>
+        <body><div class="box"><h1>Gateway konnte nicht gestartet werden</h1>
+        <div class="err"><p>${errorMessage}</p><p><small>${hint}</small></p></div>
+        <p><a href="javascript:location.reload()">Erneut versuchen</a></p></div></body></html>`,
+        503,
+      );
+    }
+
+    return c.json({ error: 'Gateway failed to start', details: errorMessage, hint }, 503);
   }
 
   // Proxy to Moltbot with WebSocket message interception
@@ -343,7 +424,7 @@ app.all('*', async (c) => {
       }
     });
 
-    // Relay messages from container to client, with error transformation
+    // Relay messages from container to client, with filtering and error transformation
     containerWs.addEventListener('message', (event) => {
       if (debugLogs) {
         console.log(
@@ -355,36 +436,30 @@ app.all('*', async (c) => {
       let data = event.data;
 
       if (typeof data === 'string') {
-        console.log('[WS DEBUG] Raw from container:', typeof data, data.substring(0, 500));
         try {
           const parsed = JSON.parse(data);
-          if (debugLogs) {
-            console.log('[WS] Parsed JSON, has error.message:', !!parsed.error?.message);
-          }
 
-          // Bug 2: Filter intermediate tool call messages – client sees only final text responses
-          const isToolCall = parsed.type === 'tool_use' || parsed.type === 'function';
-          const isToolOnlyContent =
-            Array.isArray(parsed.content) &&
-            parsed.content.length > 0 &&
-            parsed.content.every(
-              (b: { type: string }) => b.type === 'tool_use' || b.type === 'function',
-            );
-
-          if (isToolCall || isToolOnlyContent) {
-            // Bug 1: Detect and warn about malformed tool calls with [object Object] params
+          // Filter out internal/tool messages that should not reach the client
+          if (isInternalMessage(parsed)) {
             const rawParams = JSON.stringify(parsed.parameters ?? parsed.input ?? {});
             if (rawParams.includes('[object Object]')) {
-              console.warn(
-                '[WS] Malformed tool call suppressed – [object Object] in params:',
-                parsed.name,
-              );
+              console.warn('[WS] Malformed tool call suppressed – [object Object] in params:', parsed.name);
             } else if (debugLogs) {
-              console.log('[WS] Filtered tool call (not forwarded to client):', parsed.name);
+              console.log('[WS] Filtered internal message (not forwarded):', parsed.type, parsed.name);
             }
             return; // Don't forward to client
           }
 
+          // For mixed content (text + tool_use), strip tool blocks and only forward text
+          const cleaned = stripToolBlocksFromContent(parsed);
+          if (cleaned) {
+            if (debugLogs) {
+              console.log('[WS] Stripped tool blocks from mixed content message');
+            }
+            data = cleaned;
+          }
+
+          // Transform error messages to be user-friendly
           if (parsed.error?.message) {
             if (debugLogs) {
               console.log('[WS] Original error.message:', parsed.error.message);
@@ -395,9 +470,10 @@ app.all('*', async (c) => {
             }
             data = JSON.stringify(parsed);
           }
-        } catch (e) {
+        } catch {
+          // Not JSON - pass through as-is (plain text messages)
           if (debugLogs) {
-            console.log('[WS] Not JSON or parse error:', e);
+            console.log('[WS] Non-JSON message, passing through');
           }
         }
       }
@@ -454,106 +530,56 @@ app.all('*', async (c) => {
 
   console.log('[HTTP] Proxying:', url.pathname + url.search);
 
-  // For POST requests to /, intercept tool call responses and retry without tool context
-  const isAiChatRequest = request.method === 'POST' && url.pathname === '/';
-
-  // Clone request body before first fetch so we can retry if needed
-  const requestForRetry = isAiChatRequest ? request.clone() : null;
-
   const httpResponse = await sandbox.containerFetch(request, MOLTBOT_PORT);
   console.log('[HTTP] Response status:', httpResponse.status);
 
-  // Check if the response is a tool call that OpenClaw failed to complete
-  if (isAiChatRequest && httpResponse.status === 200) {
-    const responseClone = httpResponse.clone();
+  // For JSON responses from AI chat, filter out tool call artifacts
+  const contentType = httpResponse.headers.get('Content-Type') || '';
+  if (contentType.includes('application/json') && httpResponse.status === 200) {
     try {
-      const body = await responseClone.json<{ response?: string; message?: string; type?: string; name?: string }>();
-      const responseText = body.response || body.message || '';
+      const responseClone = httpResponse.clone();
+      const body = await responseClone.json<Record<string, unknown>>();
 
-      // Detect tool call in response (either top-level or nested in response field)
-      const isTopLevelToolCall = body.type === 'function' || body.type === 'tool_use';
-      let isNestedToolCall = false;
-      if (!isTopLevelToolCall && typeof responseText === 'string') {
-        try {
-          const parsed = JSON.parse(responseText);
-          isNestedToolCall = parsed.type === 'function' || parsed.type === 'tool_use';
-        } catch { /* not JSON */ }
+      // Filter tool call responses - return a clean "processing" message instead
+      if (isInternalMessage(body)) {
+        console.log('[HTTP] Filtered tool call response from container');
+        const newHeaders = new Headers(httpResponse.headers);
+        newHeaders.set('X-Worker-Debug', 'proxy-filtered-tool-call');
+        return new Response(
+          JSON.stringify({ response: 'Einen Moment, ich verarbeite deine Anfrage...', status: 'processing' }),
+          { status: 200, headers: newHeaders },
+        );
       }
 
-      if (isTopLevelToolCall || isNestedToolCall) {
-        const toolName = body.name || (isNestedToolCall ? 'nested' : 'unknown');
-        console.warn('[HTTP] Tool call response detected:', toolName);
-
-        const originalText = await requestForRetry!.text();
-        let retryBody: Record<string, unknown>;
+      // Strip tool blocks from mixed content in response fields
+      if (body.response && typeof body.response === 'string') {
         try {
-          retryBody = JSON.parse(originalText);
-        } catch {
-          retryBody = {};
-        }
-        const originalMessage = (retryBody.message as string) || '';
-
-        // If web_search and Brave API key is configured, do a real search
-        if (toolName === 'web_search') {
-          console.log('[HTTP] Executing web search for:', originalMessage.slice(0, 100));
-          try {
-            const results = c.env.BRAVE_SEARCH_API_KEY
-              ? await braveWebSearch(originalMessage, c.env.BRAVE_SEARCH_API_KEY, 5)
-              : await duckDuckGoSearch(originalMessage, 5);
-            const searchContext = formatSearchResultsAsContext(originalMessage, results);
-            console.log('[HTTP] Got', results.length, 'search results, retrying with context');
-
-            retryBody.message = searchContext + '\n\n' + originalMessage;
-
-            const retryRequest = new Request(request.url, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(retryBody),
-            });
-
-            const retryResponse = await sandbox.containerFetch(retryRequest, MOLTBOT_PORT);
-            console.log('[HTTP] Web search retry status:', retryResponse.status);
-
-            const retryHeaders = new Headers(retryResponse.headers);
-            retryHeaders.set('X-Worker-Debug', 'proxy-to-moltbot-web-search');
-            retryHeaders.set('X-Debug-Path', url.pathname);
-            return new Response(retryResponse.body, {
-              status: retryResponse.status,
-              statusText: retryResponse.statusText,
-              headers: retryHeaders,
-            });
-          } catch (searchError) {
-            console.error('[HTTP] Brave search failed, falling back:', searchError);
+          const parsed = JSON.parse(body.response);
+          if (isInternalMessage(parsed)) {
+            const newHeaders = new Headers(httpResponse.headers);
+            newHeaders.set('X-Worker-Debug', 'proxy-filtered-nested-tool-call');
+            return new Response(
+              JSON.stringify({ response: 'Einen Moment, ich verarbeite deine Anfrage...', status: 'processing' }),
+              { status: 200, headers: newHeaders },
+            );
           }
-        }
+        } catch { /* not JSON nested content - that's fine */ }
+      }
 
-        // Fallback: retry with plain text instruction
-        retryBody.message = originalMessage + '\n\n[Respond with plain text only. Do not use tools.]';
-
-        const retryRequest = new Request(request.url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(retryBody),
-        });
-
-        const retryResponse = await sandbox.containerFetch(retryRequest, MOLTBOT_PORT);
-        console.log('[HTTP] Retry response status:', retryResponse.status);
-
-        const retryHeaders = new Headers(retryResponse.headers);
-        retryHeaders.set('X-Worker-Debug', 'proxy-to-moltbot-retry');
-        retryHeaders.set('X-Debug-Path', url.pathname);
-        return new Response(retryResponse.body, {
-          status: retryResponse.status,
-          statusText: retryResponse.statusText,
-          headers: retryHeaders,
-        });
+      // Clean [object Object] artifacts from response text
+      if (body.response && typeof body.response === 'string' && body.response.includes('[object Object]')) {
+        console.warn('[HTTP] Cleaned [object Object] from response');
+        body.response = (body.response as string).replace(/\[object Object\]/g, '').trim();
+        const newHeaders = new Headers(httpResponse.headers);
+        newHeaders.set('X-Worker-Debug', 'proxy-cleaned-response');
+        return new Response(JSON.stringify(body), { status: 200, headers: newHeaders });
       }
     } catch {
-      /* not JSON or other error — fall through to normal response */
+      /* not parseable JSON - pass through as-is */
     }
   }
 
-  // Add debug header to verify worker handled the request
+  // Pass through the response with debug headers
   const newHeaders = new Headers(httpResponse.headers);
   newHeaders.set('X-Worker-Debug', 'proxy-to-moltbot');
   newHeaders.set('X-Debug-Path', url.pathname);
