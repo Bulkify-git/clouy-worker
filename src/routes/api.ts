@@ -346,11 +346,11 @@ api.post('/refresh-token', async (c) => {
     });
   }
 
-  const data = await response.json() as { access_token: string; expires_in: number };
+  const data = (await response.json()) as { access_token: string; expires_in: number };
   return c.newResponse(
     JSON.stringify({ access_token: data.access_token, expires_in: data.expires_in }),
     200,
-    { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+    { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
   );
 });
 
@@ -378,12 +378,15 @@ api.post('/analyze-file', async (c) => {
 
   if (file_type.startsWith('image/')) {
     try {
-      const visionResult = await c.env.AI.run('@cf/llava-hf/llava-1.5-7b-hf' as Parameters<Ai['run']>[0], {
-        image: [...new Uint8Array(Uint8Array.from(atob(file_content), (ch) => ch.charCodeAt(0)))],
-        prompt:
-          'Describe this image in detail. What is it? Receipt, invoice, document, photo, screenshot? What actions could be taken?',
-        max_tokens: 512,
-      } as never);
+      const visionResult = await c.env.AI.run(
+        '@cf/llava-hf/llava-1.5-7b-hf' as Parameters<Ai['run']>[0],
+        {
+          image: [...new Uint8Array(Uint8Array.from(atob(file_content), (ch) => ch.charCodeAt(0)))],
+          prompt:
+            'Describe this image in detail. What is it? Receipt, invoice, document, photo, screenshot? What actions could be taken?',
+          max_tokens: 512,
+        } as never,
+      );
       fileAnalysis =
         (visionResult as { description?: string; response?: string }).description ||
         (visionResult as { description?: string; response?: string }).response ||
@@ -459,7 +462,12 @@ api.post('/create-checkout', async (c) => {
     });
   }
 
-  const body = await c.req.json<{ planId: string; userId: string; userEmail: string; yearly?: boolean }>();
+  const body = await c.req.json<{
+    planId: string;
+    userId: string;
+    userEmail: string;
+    yearly?: boolean;
+  }>();
   const { planId, userId, userEmail, yearly } = body;
 
   const priceIds: Record<string, { monthly: string; yearly: string }> = {
@@ -480,19 +488,19 @@ api.post('/create-checkout', async (c) => {
   const response = await fetch('https://api.stripe.com/v1/checkout/sessions', {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${stripeKey}`,
+      Authorization: `Bearer ${stripeKey}`,
       'Content-Type': 'application/x-www-form-urlencoded',
     },
     body: new URLSearchParams({
       'payment_method_types[]': 'card',
-      'mode': 'subscription',
+      mode: 'subscription',
       'line_items[0][price]': priceId,
       'line_items[0][quantity]': '1',
-      'customer_email': userEmail,
+      customer_email: userEmail,
       'metadata[user_id]': userId,
       'metadata[plan_id]': planId,
-      'success_url': 'https://clouy.ai/dashboard?payment=success',
-      'cancel_url': 'https://clouy.ai/dashboard/pricing',
+      success_url: 'https://clouy.ai/dashboard?payment=success',
+      cancel_url: 'https://clouy.ai/dashboard/pricing',
     }),
   });
 
@@ -504,7 +512,7 @@ api.post('/create-checkout', async (c) => {
     });
   }
 
-  const session = await response.json() as { url: string; id: string };
+  const session = (await response.json()) as { url: string; id: string };
   return c.newResponse(JSON.stringify({ url: session.url, sessionId: session.id }), 200, {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': '*',
@@ -546,11 +554,16 @@ api.post('/stripe-webhook', async (c) => {
   const signedPayload = `${timestamp}.${body}`;
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
-    'raw', encoder.encode(webhookSecret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+    'raw',
+    encoder.encode(webhookSecret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
   );
   const signatureBytes = await crypto.subtle.sign('HMAC', key, encoder.encode(signedPayload));
   const computedSig = Array.from(new Uint8Array(signatureBytes))
-    .map(b => b.toString(16).padStart(2, '0')).join('');
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
 
   if (computedSig !== expectedSig) {
     return c.newResponse(JSON.stringify({ error: 'Signature mismatch' }), 400, {
@@ -580,10 +593,10 @@ api.post('/stripe-webhook', async (c) => {
         await fetch(`${supabaseUrl}/rest/v1/user_plans`, {
           method: 'POST',
           headers: {
-            'apikey': supabaseServiceKey,
-            'Authorization': `Bearer ${supabaseServiceKey}`,
+            apikey: supabaseServiceKey,
+            Authorization: `Bearer ${supabaseServiceKey}`,
             'Content-Type': 'application/json',
-            'Prefer': 'resolution=merge-duplicates',
+            Prefer: 'resolution=merge-duplicates',
           },
           body: JSON.stringify({
             user_id: userId,
@@ -603,8 +616,8 @@ api.post('/stripe-webhook', async (c) => {
       await fetch(`${supabaseUrl}/rest/v1/user_plans?stripe_customer_id=eq.${customerId}`, {
         method: 'PATCH',
         headers: {
-          'apikey': supabaseServiceKey,
-          'Authorization': `Bearer ${supabaseServiceKey}`,
+          apikey: supabaseServiceKey,
+          Authorization: `Bearer ${supabaseServiceKey}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ plan: 'free', stripe_subscription_id: null }),
@@ -641,12 +654,12 @@ api.post('/create-portal', async (c) => {
   const response = await fetch('https://api.stripe.com/v1/billing_portal/sessions', {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${stripeKey}`,
+      Authorization: `Bearer ${stripeKey}`,
       'Content-Type': 'application/x-www-form-urlencoded',
     },
     body: new URLSearchParams({
-      'customer': customerId,
-      'return_url': 'https://clouy.ai/dashboard/settings',
+      customer: customerId,
+      return_url: 'https://clouy.ai/dashboard/settings',
     }),
   });
 
@@ -658,7 +671,7 @@ api.post('/create-portal', async (c) => {
     });
   }
 
-  const portal = await response.json() as { url: string };
+  const portal = (await response.json()) as { url: string };
   return c.newResponse(JSON.stringify({ url: portal.url }), 200, {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': '*',
