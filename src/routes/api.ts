@@ -317,8 +317,8 @@ api.post('/refresh-token', async (c) => {
     });
   }
 
-  const googleClientId = (c.env as Record<string, string>).GOOGLE_CLIENT_ID;
-  const googleClientSecret = (c.env as Record<string, string>).GOOGLE_CLIENT_SECRET;
+  const googleClientId = (c.env as unknown as Record<string, string>).GOOGLE_CLIENT_ID;
+  const googleClientSecret = (c.env as unknown as Record<string, string>).GOOGLE_CLIENT_SECRET;
 
   if (!googleClientId || !googleClientSecret) {
     return c.newResponse(JSON.stringify({ error: 'Google credentials not configured' }), 500, {
@@ -429,13 +429,16 @@ Formatiere Vorschläge als JSON-Block:
 Wenn keine sinnvollen Aktionen möglich sind, lasse suggested_actions leer ([]).`;
 
   let analysisResponse = '';
-  const aiResponse = await c.env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
-    messages: [
-      { role: 'system', content: prompt },
-      { role: 'user', content: `Analyse: ${file_name}` },
-    ],
-    max_tokens: 1024,
-  });
+  const aiResponse = await c.env.AI.run(
+    '@cf/meta/llama-3.1-8b-instruct' as Parameters<Ai['run']>[0],
+    {
+      messages: [
+        { role: 'system', content: prompt },
+        { role: 'user', content: `Analyse: ${file_name}` },
+      ],
+      max_tokens: 1024,
+    },
+  );
   analysisResponse = (aiResponse as { response: string }).response;
 
   return c.newResponse(JSON.stringify({ response: analysisResponse }), 200, {
@@ -454,7 +457,7 @@ api.options('/create-checkout', (c) => {
 });
 
 api.post('/create-checkout', async (c) => {
-  const stripeKey = (c.env as Record<string, string>).STRIPE_SECRET_KEY;
+  const stripeKey = (c.env as unknown as Record<string, string>).STRIPE_SECRET_KEY;
   if (!stripeKey) {
     return c.newResponse(JSON.stringify({ error: 'Stripe not configured' }), 500, {
       'Content-Type': 'application/json',
@@ -521,10 +524,10 @@ api.post('/create-checkout', async (c) => {
 
 // POST /api/stripe-webhook — Handle Stripe webhook events
 api.post('/stripe-webhook', async (c) => {
-  const stripeKey = (c.env as Record<string, string>).STRIPE_SECRET_KEY;
-  const webhookSecret = (c.env as Record<string, string>).STRIPE_WEBHOOK_SECRET;
-  const supabaseUrl = (c.env as Record<string, string>).SUPABASE_URL;
-  const supabaseServiceKey = (c.env as Record<string, string>).SUPABASE_SERVICE_ROLE_KEY;
+  const stripeKey = (c.env as unknown as Record<string, string>).STRIPE_SECRET_KEY;
+  const webhookSecret = (c.env as unknown as Record<string, string>).STRIPE_WEBHOOK_SECRET;
+  const supabaseUrl = (c.env as unknown as Record<string, string>).SUPABASE_URL;
+  const supabaseServiceKey = (c.env as unknown as Record<string, string>).SUPABASE_SERVICE_ROLE_KEY;
 
   if (!stripeKey || !webhookSecret) {
     return c.newResponse(JSON.stringify({ error: 'Stripe not configured' }), 500, {
@@ -640,7 +643,7 @@ api.options('/create-portal', (c) => {
 });
 
 api.post('/create-portal', async (c) => {
-  const stripeKey = (c.env as Record<string, string>).STRIPE_SECRET_KEY;
+  const stripeKey = (c.env as unknown as Record<string, string>).STRIPE_SECRET_KEY;
   if (!stripeKey) {
     return c.newResponse(JSON.stringify({ error: 'Stripe not configured' }), 500, {
       'Content-Type': 'application/json',
